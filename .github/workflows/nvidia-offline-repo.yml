@@ -2,50 +2,69 @@ name: Build NVIDIA Offline Repo
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag to create/update"
+        required: true
+        default: "nvidia-offline-v1.18.2-1"
+      target_commitish:
+        description: "Branch or commit the tag should point to"
+        required: true
+        default: "main"
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Install tools
-        run: |
-          sudo apt update
-          sudo apt install -y dpkg-dev apt-rdepends
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Define packages
+      - name: Install packaging tools
         run: |
-          echo "PKGS=nvidia-container-toolkit nvidia-container-toolkit-base nvidia-docker2" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates curl gnupg2 dpkg-dev apt-rdepends
 
-      - name: Create repo directory
+      - name: Configure NVIDIA Container Toolkit repo
         run: |
+          curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+            | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+          curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+            | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+            | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
+          sudo apt-get update
+
+      - name: Build offline repo
+        run: |
+          set -euo pipefail
           mkdir -p offline-repo
           cd offline-repo
 
-      - name: Download packages + dependencies
-        run: |
-          cd offline-repo
+          PKGS="nvidia-container-toolkit nvidia-container-toolkit-base nvidia-docker2"
 
-          # get dependency tree
-          apt-cache depends --recurse --no-recommends --no-suggests \
-            $PKGS | grep "^\w" | sort -u > pkglist.txt
+          apt-rdepends $PKGS \
+            | awk '/^[A-Za-z0-9][A-Za-z0-9.+:-]*$/ {print $1}' \
+            | sort -u > pkglist.txt
 
-          # download all .debs
-          while read pkg; do
-            apt-get download "$pkg" || true
+          while read -r pkg; do
+            apt-get download "$pkg"
           done < pkglist.txt
 
-      - name: Build repo metadata
-        run: |
-          cd offline-repo
           dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz
 
-      - name: Archive repo
-        run: |
-          tar -czf nvidia-offline-repo.tar.gz offline-repo
+      - name: Pack bundle
+        run: tar -czf nvidia-offline-repo.tar.gz offline-repo
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Create draft release
+        uses: softprops/action-gh-release@v3
         with:
-          name: nvidia-offline-repo
-          path: nvidia-offline-repo.tar.gz
+          draft: true
+          tag_name: ${{ inputs.tag_name }}
+          target_commitish: ${{ inputs.target_commitish }}
+          name: ${{ inputs.tag_name }}
+          files: nvidia-offline-repo.tar.gz
+          fail_on_unmatched_files: true
