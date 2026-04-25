@@ -1,0 +1,51 @@
+name: Build NVIDIA Offline Repo
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt update
+          sudo apt install -y dpkg-dev apt-rdepends
+
+      - name: Define packages
+        run: |
+          echo "PKGS=nvidia-container-toolkit nvidia-container-toolkit-base nvidia-docker2" >> $GITHUB_ENV
+
+      - name: Create repo directory
+        run: |
+          mkdir -p offline-repo
+          cd offline-repo
+
+      - name: Download packages + dependencies
+        run: |
+          cd offline-repo
+
+          # get dependency tree
+          apt-cache depends --recurse --no-recommends --no-suggests \
+            $PKGS | grep "^\w" | sort -u > pkglist.txt
+
+          # download all .debs
+          while read pkg; do
+            apt-get download "$pkg" || true
+          done < pkglist.txt
+
+      - name: Build repo metadata
+        run: |
+          cd offline-repo
+          dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz
+
+      - name: Archive repo
+        run: |
+          tar -czf nvidia-offline-repo.tar.gz offline-repo
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvidia-offline-repo
+          path: nvidia-offline-repo.tar.gz
